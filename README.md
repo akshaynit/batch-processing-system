@@ -43,7 +43,45 @@ scripts/          # sample-data generator, doc tooling
 tests/            # unit + integration
 ```
 
-## Quick start (Docker — recommended)
+## Quick start (one command — recommended)
+
+The fastest way to build, run, and **see real results end-to-end**. One script
+builds the Docker image, starts Postgres + the uvicorn API (DB migrations run
+automatically), waits for health, drives the API (submit → poll status →
+download), and prints the API container logs:
+
+```bash
+cp .env.example .env            # set LLM_API_KEY (DigitalOcean model access key) + LLM_MODEL
+./scripts/demo_stack.sh         # build + run + submit + poll + download + show logs
+```
+
+Example output (real inference calls against the configured model):
+
+```
+== Waiting for API health   -> {"status":"ok"}
+== Submitting job           -> {"job_id":"9900be18-..."}
+== Polling status           -> state=RUNNING ... -> state=COMPLETED total=3 succeeded=3 failed=0
+== Downloading results
+   returned 3 records  (3 succeeded, 0 failed)
+   [prompt-0001] SUCCEEDED: 'hello'
+== API container logs ...    (structured JSON, tagged with request_id/job_id/worker_id)
+```
+
+Useful overrides and follow-ups:
+
+```bash
+INPUT=my_batch.json ./scripts/demo_stack.sh   # custom input file
+TIMEOUT=900 LOG_LINES=200 ./scripts/demo_stack.sh
+
+docker compose logs -f api                    # live-tail logs (also written to ./data/logs/app.log)
+tail -f data/logs/app.log                     # the rotating file log on the host
+docker compose down                           # stop the stack
+```
+
+> The stack keeps running after the script finishes, so you can keep calling the API.
+> See [Logs](#observability) for the stdout vs. file-logging configuration.
+
+## Quick start (Docker — manual)
 
 Brings up Postgres + the API server. The entrypoint applies DB migrations
 automatically and the API resumes any interrupted jobs on startup.
@@ -182,6 +220,11 @@ single inference call end-to-end:
 
 Failed rows are logged at `ERROR` with the exact upstream message and attempt count.
 Set `LOG_FORMAT=console` for human-readable local logs, `LOG_LEVEL` to tune verbosity.
+
+Logs go to **stdout** by default (captured by `docker compose logs`). To **also** write
+them to a rotating file on disk, set `LOG_FILE` (e.g. `LOG_FILE=/app/data/logs/app.log`,
+which persists to `./data/logs/app.log` on the host via the Docker volume). Rotation is
+controlled by `LOG_FILE_MAX_BYTES` (default 10 MB) and `LOG_FILE_BACKUP_COUNT` (default 5).
 
 **2. Metrics** — Prometheus text format at `GET /metrics` (just `curl` it; Prometheus
 is optional). Key series:

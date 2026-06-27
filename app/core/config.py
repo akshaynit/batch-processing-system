@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     environment: str = "local"
     log_level: str = "INFO"
     log_format: str = "json"  # json | console
+    log_file: str = ""  # if set, also write logs to this file (rotating)
+    log_file_max_bytes: int = 10_000_000  # rotate at ~10 MB
+    log_file_backup_count: int = 5  # keep this many rotated files
     metrics_enabled: bool = True
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.0

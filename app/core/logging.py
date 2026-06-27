@@ -13,7 +13,9 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import logging.handlers
 from datetime import UTC, datetime
+from pathlib import Path
 
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
@@ -95,11 +97,29 @@ def configure_logging(level: str | int | None = None, fmt: str | None = None) ->
     level = level if level is not None else settings.log_level
     fmt = fmt if fmt is not None else settings.log_format
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter() if fmt == "json" else ConsoleFormatter())
+    def _formatter() -> logging.Formatter:
+        return JsonFormatter() if fmt == "json" else ConsoleFormatter()
+
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    # Optional rotating file handler: write logs to disk in addition to stdout.
+    if settings.log_file:
+        log_path = Path(settings.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=settings.log_file_max_bytes,
+                backupCount=settings.log_file_backup_count,
+                encoding="utf-8",
+            )
+        )
+
+    for handler in handlers:
+        handler.setFormatter(_formatter())
 
     root = logging.getLogger()
-    root.handlers = [handler]
+    root.handlers = handlers
     root.setLevel(level)
 
     # Route uvicorn's own loggers through our handler/formatter for consistency.
