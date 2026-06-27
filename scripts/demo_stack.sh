@@ -54,6 +54,19 @@ until curl -fsS "$BASE_URL/health" >/dev/null 2>&1; do
 done
 curl -fsS "$BASE_URL/health"; echo
 
+say "Prompts in this batch ($INPUT)"
+"$PY" - "$INPUT" <<'PY' || echo "  (could not read $INPUT)"
+import json, sys
+with open(sys.argv[1]) as fh:
+    data = json.load(fh)
+print("  %d prompt(s):" % len(data))
+for i, r in enumerate(data, 1):
+    p = (r.get("prompt") or "").replace("\n", " ")
+    if len(p) > 100:
+        p = p[:100] + "..."
+    print("  %2d. [%s] %s" % (i, r.get("id", "?"), p))
+PY
+
 say "Submitting job (input=$INPUT)"
 SUBMIT_RESP="$(curl -fsS -X POST "$BASE_URL/jobs" \
   -H 'content-type: application/json' \
@@ -89,5 +102,26 @@ for r in data[:5]:
 
 say "API container logs (last ${LOG_LINES} lines)"
 $DC logs --tail "$LOG_LINES" api
+
+say "Log file location"
+LOG_FILE_ENV="$(grep -E '^LOG_FILE=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r')"
+if [ -n "${LOG_FILE_ENV:-}" ]; then
+  # Map the in-container path (/app/data/...) to the host bind-mount (./data/...).
+  HOST_LOG="$LOG_FILE_ENV"
+  case "$HOST_LOG" in
+    /app/data/*) HOST_LOG="./data/${HOST_LOG#/app/data/}" ;;
+  esac
+  echo "  in container : $LOG_FILE_ENV"
+  echo "  on host      : $HOST_LOG"
+  if [ -f "$HOST_LOG" ]; then
+    echo "  size         : $(wc -c < "$HOST_LOG" | tr -d ' ') bytes"
+    echo "  follow with  : tail -f $HOST_LOG"
+  else
+    echo "  (host file not present yet — it appears once the container writes a log line)"
+  fi
+else
+  echo "  LOG_FILE is not set in .env -> logs go to stdout only."
+  echo "  view with    : $DC logs -f api"
+fi
 
 say "Done. job_id=$JOB_ID   (stop the stack with: $DC down)"
