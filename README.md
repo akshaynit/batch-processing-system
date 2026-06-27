@@ -68,6 +68,32 @@ curl localhost:8000/job/<job_id>/status
 curl localhost:8000/job/<job_id>/download
 ```
 
+### Run a 1000-prompt batch
+
+The input is a JSON **array** of `{ "id", "prompt" }` objects:
+
+```json
+[
+  { "id": "prompt-0001", "prompt": "Explain photosynthesis in one sentence." },
+  { "id": "prompt-0002", "prompt": "Summarize the key idea behind recursion." }
+]
+```
+
+Generate a 1000-item template and run the whole pipeline end-to-end:
+
+```bash
+# 1) Generate the input template (1000 items -> ./sample_batch.json, bind-mounted into the API)
+python scripts/generate_sample_batch.py 1000 sample_batch.json
+
+# 2) Submit -> poll -> download. Raise the client timeout for a larger batch.
+TIMEOUT=900 scripts/api_demo.sh sample_batch.json
+```
+
+> 💰 **Cost note:** 1000 prompts = ~1000 live inference calls. For free, repeatable
+> testing of the *plumbing* at this size, use the mock client instead (no tokens):
+> `python scripts/smoke_e2e.py sample_batch.json`. Tune throughput with the knobs in
+> [Scaling & resource thresholds](#scaling--resource-thresholds).
+
 ## Quick start (local, no Docker)
 
 ```bash
@@ -80,6 +106,65 @@ uvicorn app.main:app --reload                 # API on :8000
 # optional: a standalone worker for a specific job (durable queue)
 python workers/run_worker.py <job_id>
 ```
+
+## Scaling & resource thresholds
+
+The full architectural/memory analysis lives in
+[`docs/Batch_Eval_Engine_Design.docx`](docs/Batch_Eval_Engine_Design.docx); this is the
+operational summary.
+
+### The three tuning knobs (env)
+
+| Knob | Default | What it controls |
+| --- | --- | --- |
+| `WORKER_POOL_SIZE` | 4 | Worker coroutines that claim chunks and orchestrate flush/heartbeat. |
+| `MAX_CONCURRENCY` | 10 | **Hard cap on in-flight inference calls** (the backpressure semaphore, shared across all workers). This is the real throughput dial. |
+| `CHUNK_SIZE` | 50 | Rows claimed per DB round-trip and processed together before a checkpoint flush. |
+
+Supporting knobs: `RETRY_MAX_ATTEMPTS`, `RETRY_BASE/FACTOR/CAP` (back-off), `LEASE_TTL_SECONDS`, `HEARTBEAT_SECONDS`.
+
+### Why it does not OOM at 500k items
+
+Memory is **bounded and independent of total batch size N**:
+
+- **Ingestion streams** the file with `ijson` and inserts in batches of 500 — the input is never fully loaded. Peak ≈ one insert batch.
+- **Processing working set** is `WORKER_POOL_SIZE × CHUNK_SIZE` rows resident at once (defaults: 4 × 50 = **200 rows**). Each chunk's results are flushed to storage and released before the next claim — so 1k and 500k items have the *same* in-flight footprint (a few MB; even 16×500 is only tens of MB).
+- **Download streams** results from disk chunk-by-chunk (`StreamingResponse`), O(1) memory.
+- The only O(N) state is the `prompt_items` rows in **Postgres** (on disk, where it belongs) and the per-chunk result files on disk/Spaces.
+
+### Throughput, ceilings & bottlenecks
+
+Throughput ≈ `MAX_CONCURRENCY / avg_latency`, capped by the provider's rate limit.
+
+| Batch | MAX_CONCURRENCY | ~avg 1s latency | Wall-clock (rough) |
+| --- | --- | --- | --- |
+| 1,000 | 10 | 10 req/s | ~100 s |
+| 1,000 | 50 | 50 req/s | ~20 s |
+| 500,000 | 50 (1 process) | 50 req/s | ~2.8 h |
+| 500,000 | 200 (4 worker replicas × 50) | 200 req/s | ~42 min |
+
+Bottleneck order as you scale: **(1) provider rate limit / latency → (2) `MAX_CONCURRENCY` → (3) DB claim contention (only with very small chunks) → (4) storage write throughput.** App RAM is never the limit.
+
+`CHUNK_SIZE` trade-off: larger chunks mean fewer DB claims (less overhead) but more memory per worker, coarser flush granularity, and more reprocessing if a worker dies mid-chunk (≤ `CHUNK_SIZE` rows redone). Heartbeats renew the lease every `HEARTBEAT_SECONDS`, so a chunk is **not** bounded by `LEASE_TTL_SECONDS` — lease expiry happens only when a worker actually dies, after which the chunk is safely reclaimed.
+
+### Recommended settings by scale
+
+| Scale | Topology | WORKER_POOL_SIZE | MAX_CONCURRENCY | CHUNK_SIZE |
+| --- | --- | --- | --- | --- |
+| ≤ 1k (dev/test) | single process | 4 | 10 | 50 |
+| 10k–50k | single process | 4–8 | 20–50 | 50–100 |
+| 100k–500k+ | **multiple worker replicas** + managed Postgres | 4–8 / replica | 20–50 / replica | 100 |
+
+Always keep `MAX_CONCURRENCY` at or below the provider's rate limit to avoid burning retries.
+
+### Horizontal scaling
+
+The work queue is durable and claims are atomic (`FOR UPDATE SKIP LOCKED`), so you can run
+**many worker processes/replicas across machines against the same Postgres** with no
+double-processing and no lost work if one dies (its lease expires and the chunk is
+reclaimed). Today the API process also runs the pool; for large batches run additional
+replicas/worker processes pointed at the same database. Effective global concurrency is the
+**sum** of every replica's `MAX_CONCURRENCY`.
 
 ## Observability
 
@@ -114,6 +199,13 @@ is optional). Key series:
 | `batch_inflight_requests` | Live concurrency (backpressure) gauge |
 | `batch_chunks_claimed_total` | Work-queue claim rate |
 
+The `*_duration_seconds` series are histograms (with `_bucket`/`_sum`/`_count`), so you can
+derive p50/p95/p99 latency. Questions these answer at a glance: *throughput* (rate of
+`items_processed_total`), *success/failure rate* (by `status`), *whether you're rate-limited*
+(`inference_requests_total{outcome="retryable_error"}` + `inference_retries_total` climbing),
+*are you saturating the concurrency budget* (`inflight_requests` pinned at `MAX_CONCURRENCY`),
+and *API health* (HTTP status mix + latency).
+
 **3. Error tracking (optional)** — set `SENTRY_DSN` and `pip install ".[observability]"`.
 Unhandled API errors are captured automatically; isolated per-row and per-job failures
 are reported explicitly with `job_id`/`external_id`/`model` tags. With no DSN it is a
@@ -139,6 +231,58 @@ docker compose --profile observability up -d
 Note: metrics belong in a **time-series database** (Prometheus), not Postgres — Postgres
 is for the durable job/work-queue state, not high-frequency telemetry. A common, cohesive
 choice is the **Grafana stack (Prometheus + Loki + Tempo)** plus **Sentry** for errors.
+
+## Deployment
+
+### Configuration
+
+All config is environment-driven (`app/core/config.py`), read from real env vars or `.env`.
+Provide secrets via your platform's secret manager — never bake them into the image.
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | `postgresql+asyncpg://…` — managed Postgres in production |
+| `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | Inference endpoint + model |
+| `STORAGE_BACKEND` | `local` (dev) or `s3` (DigitalOcean Spaces / S3) |
+| `SPACES_*` | Bucket/endpoint/region/key/secret when `STORAGE_BACKEND=s3` |
+| `WORKER_POOL_SIZE`, `MAX_CONCURRENCY`, `CHUNK_SIZE` | Throughput tuning (see above) |
+| `LOG_FORMAT`, `LOG_LEVEL`, `METRICS_ENABLED`, `SENTRY_DSN` | Observability |
+
+### Single host (Docker Compose)
+
+```bash
+cp .env.example .env   # fill in real values
+docker compose up -d --build          # postgres + api (migrations auto-applied on start)
+docker compose --profile observability up -d   # optional: + Prometheus & Grafana
+```
+
+The image (`Dockerfile`) runs as a non-root user, has a `HEALTHCHECK`, and its entrypoint
+applies `alembic upgrade head` before serving. On startup the API **resumes** any jobs left
+`INGESTING`/`RUNNING` by a previous (crashed) process.
+
+### Production topology
+
+- **Database:** a managed Postgres (e.g. DigitalOcean Managed Databases / RDS). Point
+  `DATABASE_URL` at it. It holds the durable queue + job state.
+- **Result storage:** set `STORAGE_BACKEND=s3` + `SPACES_*` so chunk results persist to
+  DigitalOcean Spaces / S3 (survives container restarts; required if running multiple replicas).
+- **Migrations:** run `alembic upgrade head` as a one-off/init step on deploy (the container
+  entrypoint already does this; for multi-replica rollouts run it once before scaling up).
+- **Scaling out:** run multiple API/worker replicas against the same Postgres — the
+  `SKIP LOCKED` queue makes this safe (see [Horizontal scaling](#horizontal-scaling)).
+  Behind a load balancer, the `/jobs`, `/status`, `/download` endpoints are stateless reads/writes.
+- **Web server:** a single async Uvicorn process is enough for the I/O-bound API. For
+  multi-core HTTP throughput, run Gunicorn with Uvicorn workers
+  (`gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w <cores>`) or scale replicas.
+- **Health & telemetry:** wire `GET /health` to liveness/readiness probes; scrape `GET /metrics`;
+  ship stdout JSON logs to your log store; set `SENTRY_DSN` for error aggregation.
+- **Secrets:** inject `LLM_API_KEY`, `SPACES_*`, `SENTRY_DSN` via the platform secret store
+  (Kubernetes Secrets, DO App Platform env-encrypted vars, etc.).
+
+### CI image
+
+The CI `docker-build` job builds the image on every push. To publish, add a registry login +
+`docker push` (e.g. GHCR/DOCR) to `.github/workflows/ci.yml` and deploy that tag.
 
 ## Development & tests
 
