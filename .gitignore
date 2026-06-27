@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+.venv-*/
+venv/
+env/
+
+# Environment / secrets
+.env
+.gh_token
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local data (job results, sample batches)
+data/
+sample_batch.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

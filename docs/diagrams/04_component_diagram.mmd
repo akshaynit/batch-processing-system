@@ -1,0 +1,24 @@
+flowchart TD
+    API["API Layer<br/>routers/jobs.py"] --> JS["JobService"]
+    JS --> ING["BatchIngestor"]
+    JS --> JR["interface<br/>JobRepository"]
+    JS --> WQ["interface<br/>WorkQueueRepository"]
+    ING --> VP["ValidationPipeline"]
+    ING --> WQ
+
+    BE["BatchEngine"] --> W["Worker (pool)"]
+    W --> WQ
+    W --> IC["interface<br/>InferenceClient"]
+    W --> SB["interface<br/>StorageBackend"]
+    W --> RP["RetryPolicy"]
+    W --> CL["ConcurrencyLimiter"]
+
+    PGJ["PgJobRepository"] -. implements .-> JR
+    PGW["PgWorkQueueRepository"] -. implements .-> WQ
+    DOC["DOInferenceClient"] -. implements .-> IC
+    MOCK["MockInferenceClient"] -. implements .-> IC
+    LFS["LocalFileStorage"] -. implements .-> SB
+    S3["S3SpacesStorage"] -. implements .-> SB
+
+    MAIN["main.py<br/>composition root"] -. wires .-> JS
+    MAIN -. wires .-> BE

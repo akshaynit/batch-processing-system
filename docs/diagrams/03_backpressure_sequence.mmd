@@ -1,0 +1,10 @@
+sequenceDiagram
+    participant W as Workers (N permits)
+    participant API as Inference Endpoint
+    Note over W,API: Healthy - permits cycle fast, high throughput
+    API-->>W: 429 (overloaded)
+    W->>W: back-off + jitter (permit held during sleep)
+    Note over W: fewer permits free - fewer new calls start
+    Note over API: incoming request rate DROPS automatically
+    API-->>W: recovers (200 OK)
+    Note over W,API: permits cycle fast again - throughput ramps back up

@@ -1,0 +1,79 @@
+[project]
+name = "batch-processing-system"
+version = "0.1.0"
+description = "Asynchronous batch evaluation engine: scatter-gather LLM inference over a bounded worker pool with durable Postgres queue and backpressure."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "openai>=1.30",
+    "ijson>=3.2",
+    "httpx>=0.27",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+# Object storage backend (DigitalOcean Spaces / S3) — enabled when STORAGE_BACKEND=s3
+s3 = [
+    "boto3>=1.34",
+]
+# Error tracking — enabled only when SENTRY_DSN is set
+observability = [
+    "sentry-sdk[fastapi]>=2.0",
+]
+# Tooling used to (re)generate the design document under docs/
+docs = [
+    "python-docx>=1.1",
+    "requests>=2.31",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Doc-build utilities: allow long descriptive string lines.
+"scripts/build_doc.py" = ["E501"]
+# str+Enum is intentional (stable .value semantics across DB/JSON).
+"app/domain/enums.py" = ["UP042"]
+# ijson requires a file handle; streaming parse runs in a background task.
+"app/services/ingestor.py" = ["ASYNC230"]
+# FastAPI's Depends() in argument defaults is the idiomatic injection pattern.
+"app/api/routers/*" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: tests that require a live Postgres database",
+    "live: tests that hit a real inference endpoint (excluded from CI)",
+]

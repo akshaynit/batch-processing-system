@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> PENDING: ingested & validated
+    [*] --> FAILED: invalid / corrupt input (isolated)
+    PENDING --> CLAIMED: worker claims (SKIP LOCKED)
+    CLAIMED --> SUCCEEDED: 200 OK, result flushed
+    CLAIMED --> FAILED: permanent error / retries exhausted
+    CLAIMED --> PENDING: lease expired (worker crashed) - re-claim
+    SUCCEEDED --> [*]
+    FAILED --> [*]

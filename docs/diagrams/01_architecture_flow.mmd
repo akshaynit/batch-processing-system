@@ -1,0 +1,32 @@
+flowchart LR
+    CLIENT["Client"]
+
+    subgraph T1["1 - INGESTION"]
+        ING["POST /jobs<br/>return job_id now<br/>stream-parse + validate<br/>(background)"]
+    end
+    subgraph T2["2 - SCATTER / SEGMENTATION"]
+        SC["Bounded worker pool<br/>claims CHUNKS via<br/>FOR UPDATE SKIP LOCKED"]
+    end
+    subgraph T3["3 - BACKPRESSURE"]
+        BP["Semaphore-bounded calls<br/>+ exp back-off & jitter<br/>+ isolated row failures"]
+    end
+    subgraph T4["4 - GATHER / COLLECTION"]
+        GA["Flush chunk results<br/>+ update status<br/>+ assemble download"]
+    end
+
+    CLIENT --> T1
+    T1 --> T2
+    T2 --> T3
+    T3 --> T4
+
+    PG[("Postgres<br/>jobs + work queue")]
+    LLM[("DO Serverless<br/>llama3-8b-instruct")]
+    STORE[("Storage<br/>local now / DO Spaces later")]
+
+    T1 -->|insert PENDING rows| PG
+    T2 <-->|claim / lease| PG
+    T3 -->|live inference| LLM
+    T4 -->|chunk objects| STORE
+    T4 -->|status counts| PG
+    CLIENT -.->|GET /status| PG
+    CLIENT -.->|GET /download| STORE

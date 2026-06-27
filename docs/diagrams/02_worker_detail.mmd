@@ -1,0 +1,11 @@
+flowchart TB
+    A["Claim chunk of N rows<br/>(held in worker memory)"] --> B["For each row:<br/>acquire semaphore slot"]
+    B --> C["await inference call"]
+    C --> D{"outcome"}
+    D -- success --> E["row result<br/>free slot"]
+    D -- retryable --> F["sleep(backoff + jitter)<br/>retry up to 5"]
+    F --> C
+    D -- permanent --> G["row error (isolated)<br/>free slot"]
+    E --> H["Chunk done:<br/>flush to storage<br/>commit status in Postgres<br/>release chunk memory"]
+    G --> H
+    H --> I["Heartbeat renews lease while working;<br/>crash : lease expires : row re-claimed"]

@@ -1,0 +1,82 @@
+classDiagram
+    class InferenceClient {
+        <<interface>>
+        +complete(req) InferenceResponse
+        +aclose() None
+    }
+    class StorageBackend {
+        <<interface>>
+        +write_chunk(job_id, chunk_id, records) str
+        +iter_results(job_id) AsyncIterator
+    }
+    class JobRepository {
+        <<interface>>
+        +create(job) None
+        +get(job_id) JobRecord
+        +set_state(job_id, state) None
+        +get_status(job_id) JobStatus
+    }
+    class WorkQueueRepository {
+        <<interface>>
+        +bulk_insert(job_id, items, failed) int
+        +claim_chunk(job_id, worker_id, size, lease) list
+        +complete_items(worker_id, results, ref) int
+        +renew_lease(worker_id, lease) None
+        +count_by_status(job_id) dict
+        +has_open_work(job_id) bool
+    }
+
+    class JobService {
+        +submit(req) UUID
+        +get_status(job_id) JobStatus
+        +stream_results(job_id) AsyncIterator
+    }
+    class BatchIngestor {
+        +ingest(job_id, path) IngestSummary
+    }
+    class ValidationPipeline {
+        +validate_item(item, ctx) ValidationOutcome
+        +validate_batch_meta(meta) ValidationOutcome
+    }
+    class BatchEngine {
+        +run(job_id) None
+    }
+    class Worker {
+        +run(job_id) None
+        -_process_chunk(job_id, chunk) list
+        -_process_row(item) ResultRecord
+        -_heartbeat(job_id) None
+    }
+    class RetryPolicy {
+        +is_retryable(exc) bool
+        +delay_for(attempt) float
+    }
+    class ConcurrencyLimiter {
+        +run(coro_factory) T
+    }
+
+    class PgJobRepository
+    class PgWorkQueueRepository
+    class DOInferenceClient
+    class MockInferenceClient
+    class LocalFileStorage
+    class S3SpacesStorage
+
+    JobRepository <|.. PgJobRepository
+    WorkQueueRepository <|.. PgWorkQueueRepository
+    InferenceClient <|.. DOInferenceClient
+    InferenceClient <|.. MockInferenceClient
+    StorageBackend <|.. LocalFileStorage
+    StorageBackend <|.. S3SpacesStorage
+
+    JobService --> JobRepository
+    JobService --> WorkQueueRepository
+    JobService --> BatchIngestor
+    BatchIngestor --> ValidationPipeline
+    BatchIngestor --> WorkQueueRepository
+    BatchEngine --> Worker
+    Worker --> WorkQueueRepository
+    Worker --> InferenceClient
+    Worker --> StorageBackend
+    Worker --> RetryPolicy
+    Worker --> ConcurrencyLimiter
