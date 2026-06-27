@@ -59,12 +59,15 @@ say "Prompts in this batch ($INPUT)"
 import json, sys
 with open(sys.argv[1]) as fh:
     data = json.load(fh)
-print("  %d prompt(s):" % len(data))
-for i, r in enumerate(data, 1):
+preview = data if len(data) <= 20 else data[:10]
+print("  %d prompt(s)%s:" % (len(data), "" if len(data) <= 20 else " (showing first 10)"))
+for i, r in enumerate(preview, 1):
     p = (r.get("prompt") or "").replace("\n", " ")
     if len(p) > 100:
         p = p[:100] + "..."
     print("  %2d. [%s] %s" % (i, r.get("id", "?"), p))
+if len(data) > 20:
+    print("  ... and %d more" % (len(data) - 10))
 PY
 
 say "Submitting job (input=$INPUT)"

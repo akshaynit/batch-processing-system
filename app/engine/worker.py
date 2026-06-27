@@ -64,6 +64,12 @@ class Worker:
             CHUNKS_CLAIMED.inc()
 
             chunk_id = uuid4().hex
+            logger.info(
+                "chunk claimed chunk=%s size=%d ext_ids=%s",
+                chunk_id,
+                len(chunk),
+                [c.external_id for c in chunk],
+            )
             heartbeat = asyncio.create_task(self._heartbeat())
             try:
                 results = await self._process_chunk(chunk)
@@ -74,13 +80,15 @@ class Worker:
 
             ref = await self.storage.write_chunk(str(job_id), chunk_id, results)
             completed = await self.queue.complete_items(self.worker_id, results, ref)
+            ok = sum(1 for r in results if r.status == ItemStatus.SUCCEEDED)
             logger.info(
-                "worker=%s job=%s chunk=%s processed=%d committed=%d",
-                self.worker_id,
-                job_id,
+                "chunk done chunk=%s processed=%d ok=%d failed=%d committed=%d ref=%s",
                 chunk_id,
                 len(results),
+                ok,
+                len(results) - ok,
                 completed,
+                ref,
             )
 
     async def _process_chunk(self, chunk: list[ClaimedItem]) -> list[ResultRecord]:
@@ -95,6 +103,12 @@ class Worker:
         attempt = 0
         model = self.settings.llm_model
         INFLIGHT.inc()
+        logger.info(
+            "row start ext_id=%s db_id=%d deliveries=%d",
+            item.external_id,
+            item.id,
+            item.attempts,
+        )
         try:
             for attempt in range(self.settings.retry_max_attempts):
                 try:
@@ -108,12 +122,19 @@ class Worker:
                     INFERENCE_LATENCY.labels(model).observe(time.monotonic() - call_start)
                     INFERENCE_REQUESTS.labels(model, "success").inc()
                     ITEMS_PROCESSED.labels(ItemStatus.SUCCEEDED.value).inc()
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    logger.info(
+                        "row ok ext_id=%s attempts=%d latency_ms=%d",
+                        item.external_id,
+                        attempt + 1,
+                        latency_ms,
+                    )
                     return ResultRecord(
                         external_id=item.external_id,
                         status=ItemStatus.SUCCEEDED,
                         response=response.text,
                         attempts=attempt + 1,
-                        latency_ms=int((time.monotonic() - start) * 1000),
+                        latency_ms=latency_ms,
                     )
                 except RetryableInferenceError as exc:
                     last_error = str(exc)

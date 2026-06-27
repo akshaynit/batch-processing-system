@@ -55,11 +55,12 @@ class BatchEngine:
             for i in range(self.settings.worker_pool_size)
         ]
         logger.info(
-            "engine starting job=%s pool=%d max_concurrency=%d chunk=%d",
+            "engine starting job=%s pool=%d max_concurrency=%d chunk=%d workers=%s",
             job_id,
             self.settings.worker_pool_size,
             self.settings.max_concurrency,
             self.settings.chunk_size,
+            [w.worker_id for w in workers],
         )
         await asyncio.gather(*(w.run(job_id) for w in workers))
         await self.job_repo.set_state(job_id, JobState.COMPLETED)
